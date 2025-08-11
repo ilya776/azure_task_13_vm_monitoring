@@ -1,6 +1,6 @@
 # Параметри
 $location = "uksouth"
-$resourceGroupName = "mate-azure-task-13"  # Оновлено на правильне ім’я
+$resourceGroupName = "mate-azure-task-13"
 $networkSecurityGroupName = "defaultnsg"
 $virtualNetworkName = "vnet"
 $subnetName = "default"
@@ -18,7 +18,7 @@ $dnsLabelPrefix = "matetask"
 $vmCount = 3
 $githubUsername = "mate-academy"
 
-# Створення NSG та мережі (поза циклом)
+# Створення NSG і мережі (поза циклом)
 Write-Host "Creating network security group $networkSecurityGroupName ..."
 $nsgRuleSSH = New-AzNetworkSecurityRuleConfig -Name SSH -Protocol Tcp -Direction Inbound -Priority 1001 -SourceAddressPrefix * -SourcePortRange * -DestinationAddressPrefix * -DestinationPortRange 22 -Access Allow
 $nsgRuleHTTP = New-AzNetworkSecurityRuleConfig -Name HTTP -Protocol Tcp -Direction Inbound -Priority 1002 -SourceAddressPrefix * -SourcePortRange * -DestinationAddressPrefix * -DestinationPortRange 8080 -Access Allow
@@ -30,26 +30,30 @@ New-AzVirtualNetwork -Name $virtualNetworkName -ResourceGroupName $resourceGroup
 # Створення SSH ключа
 New-AzSshKey -Name $sshKeyName -ResourceGroupName $resourceGroupName -PublicKey $sshKeyPublicKey
 
-# --- Створення Data Collection Rule (DCR) ---
+# === Data Collection Rule (DCR) ===
+
+# ВАЖЛИВО: Переконайтесь, що у вас є Log Analytics workspace з ім’ям mateWorkspace
+# Якщо ні — створіть його вручну або додайте код для створення
+
+$workspaceResourceId = "/subscriptions/$((Get-AzContext).Subscription.Id)/resourceGroups/$resourceGroupName/providers/Microsoft.OperationalInsights/workspaces/mateWorkspace"
+
 $dcrName = "mateDCR"
 $dcrDescription = "Data Collection Rule for OS-level metrics"
 
-# Визначення DCR (приклад для збору базових метрик ОС)
 $dcrDataSources = @{
     performanceCounters = @(
         @{ counterSpecifier = "\\Processor(_Total)\\% Processor Time"; samplingFrequencyInSeconds = 15 }
         @{ counterSpecifier = "\\Memory\\Available MBytes"; samplingFrequencyInSeconds = 15 }
+        @{ counterSpecifier = "\\LogicalDisk(_Total)\\% Free Space"; samplingFrequencyInSeconds = 15 }
     )
 }
+
 $dcrDestinations = @{
     logAnalytics = @{
-        workspaceResourceId = "/subscriptions/$((Get-AzContext).Subscription.Id)/resourceGroups/$resourceGroupName/providers/Microsoft.OperationalInsights/workspaces/mateWorkspace"
+        workspaceResourceId = $workspaceResourceId
     }
 }
 
-# Якщо у вас немає Log Analytics workspace, створіть або змініть цей параметр відповідно.
-
-# Перевіряємо чи існує DCR, якщо ні – створюємо
 if (-not (Get-AzDataCollectionRule -ResourceGroupName $resourceGroupName -Name $dcrName -ErrorAction SilentlyContinue)) {
     Write-Host "Creating Data Collection Rule $dcrName ..."
     New-AzDataCollectionRule -ResourceGroupName $resourceGroupName -Name $dcrName `
@@ -61,7 +65,9 @@ if (-not (Get-AzDataCollectionRule -ResourceGroupName $resourceGroupName -Name $
     Write-Host "Data Collection Rule $dcrName already exists."
 }
 
-# Масив для результатів
+# Отримуємо об'єкт DCR для подальшого використання
+$dcr = Get-AzDataCollectionRule -ResourceGroupName $resourceGroupName -Name $dcrName
+
 $results = @()
 
 for ($i=1; $i -le $vmCount; $i++) {
@@ -103,17 +109,16 @@ for ($i=1; $i -le $vmCount; $i++) {
     Write-Host "Setting CustomScript extension on $vmName ..."
     Set-AzVMExtension @params
 
-    # Отримуємо VM об'єкт, щоб отримати ідентифікатор для DCR асоціації
+    # Отримуємо VM для отримання ID
     $vm = Get-AzVM -ResourceGroupName $resourceGroupName -Name $vmName
 
-    # Асоціюємо DCR з VM
+    # Асоціація DCR з VM
     Write-Host "Associating Data Collection Rule $dcrName with VM $vmName ..."
     New-AzDataCollectionRuleAssociation -ResourceGroupName $resourceGroupName `
         -Name "${vmName}DcrAssociation" `
         -DataCollectionRuleId $dcr.Id `
         -Scope $vm.Id
 
-    # Отримуємо публічну IP та DNS
     $publicIp = Get-AzPublicIpAddress -ResourceGroupName $resourceGroupName -Name $publicIpAddressName
 
     $results += [PSCustomObject]@{
